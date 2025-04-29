@@ -4,9 +4,10 @@ import {
   PromptInputActions,
   PromptInputTextarea,
 } from "~/components/ui/promptinput"
-import { ArrowUp, Paperclip, Square, X, Plus } from "lucide-react"
+import { ArrowUp, Square, X, Image, FileText, Film, Music, Paperclip } from "lucide-react"
 import { useRef, useState, useEffect } from "react"
 import { useChat } from "~/context/chat-context"
+import { PlusIcon } from "~/components/icons" // Import PlusIcon from icons.tsx
 
 // --- File Attach Dropdown Component ---
 function FileAttachDropdown({
@@ -35,7 +36,7 @@ function FileAttachDropdown({
         onClick={onClose} // <-- fix: just call onClose (which toggles open/close)
         aria-label="Attach files"
       >
-        <Plus className="text-primary size-5" />
+        <PlusIcon size={18} />
       </button>
       {open && (
         <div className="absolute left-0 bottom-full mb-2 z-10 w-44 rounded-lg border bg-popover p-2 shadow-lg">
@@ -47,7 +48,8 @@ function FileAttachDropdown({
             }}
             type="button"
           >
-            🖼️ Image
+            <Image className="size-4" />
+            Image
           </button>
           <button
             className="flex w-full items-center gap-2 rounded px-2 py-1 text-sm hover:bg-secondary"
@@ -57,8 +59,8 @@ function FileAttachDropdown({
             }}
             type="button"
           >
-            <Paperclip className="size-4" />
-             Document
+            <FileText className="size-4" />
+            Document
           </button>
           <button
             className="flex w-full items-center gap-2 rounded px-2 py-1 text-sm hover:bg-secondary"
@@ -68,7 +70,8 @@ function FileAttachDropdown({
             }}
             type="button"
           >
-            🎬 Video
+            <Film className="size-4" />
+            Video
           </button>
           <button
             className="flex w-full items-center gap-2 rounded px-2 py-1 text-sm hover:bg-secondary"
@@ -78,7 +81,8 @@ function FileAttachDropdown({
             }}
             type="button"
           >
-            🎵 Audio
+            <Music className="size-4" />
+            Audio
           </button>
         </div>
       )}
