@@ -1,0 +1,432 @@
+import type { User, Chat } from '~/types';
+import { useNavigate, Link, useLocation, useFetcher } from '@remix-run/react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { isToday, isYesterday, subMonths, subWeeks, format } from 'date-fns';
+
+import { Button } from '~/components/ui/button';
+import { Skeleton } from '~/components/ui/skeleton';
+import { useSidebar } from '~/components/ui/sidebar';
+import { useIsMobile } from '~/hooks/use-mobile';
+import { useChatVisibility } from '~/hooks/use-chat-visibility';
+import { useSupabase } from '~/hooks/use-supabase';
+import { TrashIcon, PencilEditIcon, MoreHorizontalIcon } from '~/components/icons';
+
+export function SidebarHistory({ user }: { user: User | undefined }) {
+  const navigate = useNavigate();
+  const { setOpenMobile } = useSidebar();
+  const isMobile = useIsMobile();
+  const { chatVisibility } = useChatVisibility(user?.id);
+  const supabase = useSupabase();
+  const fetcher = useFetcher();
+  
+  const [history, setHistory] = useState<Array<Chat>>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [editingChatId, setEditingChatId] = useState<string | null>(null);
+  const [newTitle, setNewTitle] = useState('');
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const location = useLocation();
+
+  // Initial fetch - improve error handling and logging
+  useEffect(() => {
+    fetchHistory();
+  }, [supabase, user]);
+
+  // Real-time subscription for chat changes
+  useEffect(() => {
+    if (!user?.id) return;
+
+    console.log('Setting up real-time subscription for user:', user.id);
+    
+    const channelName = `chat-changes-${user.id}`;
+    console.log(`Creating Supabase channel: ${channelName}`);
+    
+    const subscription = supabase
+      .channel(channelName)
+      .on('postgres_changes', {
+        event: '*', 
+        schema: 'public',
+        table: 'chats',
+        filter: `user_id=eq.${user.id}`
+      }, (payload) => {
+        console.log('Chat change received:', payload);
+
+        if (payload.eventType === 'INSERT') {
+          console.log('Inserting new chat into history:', payload.new);
+          setHistory(prev => {
+            // Check for duplicates first
+            const exists = prev.some(chat => chat.id === payload.new.id);
+            if (exists) {
+              console.log('Chat already exists in history, not adding duplicate');
+              return prev;
+            }
+            
+            // Add the new chat at the top of the list
+            return [{
+              id: payload.new.id,
+              title: payload.new.title || 'New Chat',
+              userId: payload.new.user_id,
+              createdAt: payload.new.created_at,
+              updatedAt: payload.new.updated_at,
+              visibility: payload.new.visibility || 'private'
+            }, ...prev.sort((a, b) => {
+              // Sort by updated_at date, newest first
+              return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+            })];
+          });
+        } else if (payload.eventType === 'UPDATE') {
+          console.log('Updating chat in history:', payload.new);
+          setHistory(prev => {
+            // Create a new array with the updated chat
+            const updated = prev.map(chat => 
+              chat.id === payload.new.id 
+                ? {
+                    ...chat,
+                    title: payload.new.title || 'New Chat',
+                    updatedAt: payload.new.updated_at,
+                    visibility: payload.new.visibility || chat.visibility
+                  }
+                : chat
+            );
+            
+            // Sort the array by updated_at date
+            return updated.sort((a, b) => 
+              new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+            );
+          });
+        } else if (payload.eventType === 'DELETE') {
+          console.log('Removing chat from history:', payload.old.id);
+          setHistory(prev => prev.filter(chat => chat.id !== payload.old.id));
+        }
+      })
+      .subscribe(status => {
+        console.log(`Subscription status for ${channelName}:`, status);
+      });
+
+    console.log('Subscription created:', subscription);
+
+    return () => {
+      console.log(`Cleaning up subscription for channel: ${channelName}`);
+      supabase.removeChannel(subscription);
+    };
+  }, [supabase, user]);
+
+  // Force refresh history when component mounts or when user changes
+  useEffect(() => {
+    if (user?.id) {
+      console.log('Force refreshing chat history for user:', user.id);
+      fetchHistory(); // Call the fetch history function directly
+    }
+  }, [user?.id]); // Only depend on user.id to prevent excessive fetching
+
+  // Extract fetchHistory as a named function for reuse
+  const fetchHistory = async () => {
+    if (!user?.id) {
+      console.log('No user ID, skipping fetch');
+      return;
+    }
+  
+    console.log('Fetching chat history for user:', user.id);
+    setIsLoading(true);
+    setError(null);
+  
+    try {
+      const { data: chats, error: chatsError } = await supabase
+        .from("chats")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false });
+  
+      if (chatsError) {
+        console.error('Error fetching chats:', chatsError);
+        throw chatsError;
+      }
+  
+      console.log(`Fetched ${chats?.length || 0} chats:`, chats);
+  
+      const formattedChats = (chats || []).map(chat => ({
+        id: chat.id,
+        title: chat.title || 'New Chat',
+        userId: chat.user_id,
+        createdAt: chat.created_at,
+        updatedAt: chat.updated_at,
+        visibility: chat.visibility as 'private' | 'public'
+      }));
+  
+      setHistory(formattedChats);
+    } catch (error: any) {
+      console.error("Error fetching chats:", error);
+      setError(`Failed to load chats: ${error.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setOpenMenuId(null);
+      }
+    }
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  // Focus the input field when editing starts
+  useEffect(() => {
+    if (editingChatId && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [editingChatId]);
+
+  const startRenaming = (chat: Chat) => {
+    setEditingChatId(chat.id);
+    setNewTitle(chat.title || 'New Chat');
+    setOpenMenuId(null);
+  };
+
+  const cancelRenaming = () => {
+    setEditingChatId(null);
+    setNewTitle('');
+  };
+
+  const saveNewTitle = async () => {
+    if (!editingChatId) return;
+    
+    try {
+      const userId = user?.id || (process.env.NODE_ENV === 'development' ? '00000000-0000-0000-0000-000000000000' : null);
+      
+      if (!userId) return;
+      
+      // Use Remix fetcher for optimistic updates
+      fetcher.submit(
+        { title: newTitle.trim() || 'New Chat' },
+        { 
+          method: 'post',
+          action: `/api/chats/${editingChatId}/rename`
+        }
+      );
+      
+      // Optimistically update local state
+      setHistory(history.map((chat) => 
+        chat.id === editingChatId ? { ...chat, title: newTitle.trim() || 'New Chat' } : chat
+      ));
+      
+      setEditingChatId(null);
+      setNewTitle('');
+    } catch (error) {
+      console.error('Error renaming chat:', error);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveNewTitle();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelRenaming();
+    }
+  };
+
+  const deleteChat = async (id: string) => {
+    try {
+      const userId = user?.id || (process.env.NODE_ENV === 'development' ? '00000000-0000-0000-0000-000000000000' : null);
+      
+      if (!userId) return;
+      
+      // First delete all messages associated with the chat
+      const { error: messagesError } = await supabase
+        .from('messages')
+        .delete()
+        .eq('chat_id', id);
+
+      if (messagesError) throw messagesError;
+
+      // Then delete the chat
+      const { error: chatError } = await supabase
+        .from('chats')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', userId);
+
+      if (chatError) throw chatError;
+      
+      // Optimistically update local state
+      setHistory(history.filter((chat: Chat) => chat.id !== id));
+      setOpenMenuId(null);
+      
+      // If we're on the deleted chat page, navigate to home
+      const currentPath = window.location.pathname;
+      if (currentPath.includes(`/chat/${id}`)) {
+        navigate('/');
+      }
+    } catch (error) {
+      console.error('Error deleting chat:', error);
+      setError('Failed to delete chat. Please try again.');
+    }
+  };
+
+  const toggleMenu = (id: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setOpenMenuId(openMenuId === id ? null : id);
+  };
+
+  const groupChatsByDate = useCallback((chats: Chat[]) => {
+    const groups: { [key: string]: Chat[] } = {
+      today: [],
+      yesterday: [],
+      lastWeek: [],
+      lastMonth: [],
+      older: []
+    };
+
+    chats.forEach(chat => {
+      const date = new Date(chat.updatedAt || chat.createdAt);
+      
+      if (isToday(date)) {
+        groups.today.push(chat);
+      } else if (isYesterday(date)) {
+        groups.yesterday.push(chat);
+      } else if (date > subWeeks(new Date(), 1)) {
+        groups.lastWeek.push(chat);
+      } else if (date > subMonths(new Date(), 1)) {
+        groups.lastMonth.push(chat);
+      } else {
+        groups.older.push(chat);
+      }
+    });
+    return groups;
+  }, []);
+
+  return (
+    <div className="flex flex-col gap-2 px-2">
+      {error && (
+        <div className="px-2 text-sm text-red-500">
+          {error}
+        </div>
+      )}
+      
+      {chatVisibility && (
+        <>
+          {isLoading ? (
+            <div className="space-y-2 px-2">
+              <Skeleton className="h-10" />
+              <Skeleton className="h-10" />
+              <Skeleton className="h-10" />
+            </div>
+          ) : history.length === 0 ? (
+            <div className="px-2 text-sm text-muted-foreground">
+              No chat history
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {Object.entries(groupChatsByDate(history)).map(([period, chats]) => 
+                chats.length > 0 ? (
+                  <div key={period}>
+                    <div className="px-2 text-xs font-semibold text-muted-foreground uppercase mb-2">
+                      {period === 'today' ? 'Today' :
+                       period === 'yesterday' ? 'Yesterday' :
+                       period === 'lastWeek' ? 'Last 7 Days' :
+                       period === 'lastMonth' ? 'Last 30 Days' : 'Older'}
+                    </div>
+                    <div className="space-y-1">
+                      {chats.map((chat: Chat) => (
+                        <div
+                          key={chat.id}
+                          className="flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-muted"
+                        >
+                          {editingChatId === chat.id ? (
+                            <input
+                              ref={inputRef}
+                              type="text"
+                              value={newTitle}
+                              onChange={(e) => setNewTitle(e.target.value)}
+                              onBlur={saveNewTitle}
+                              onKeyDown={handleKeyDown}
+                              className="flex-1 bg-transparent text-sm rounded border border-input px-2 py-1 focus:outline-none focus:ring-1 focus:ring-ring"
+                              placeholder="Chat name"
+                            />
+                          ) : (
+                            <Link
+                              to={`/chat/${chat.id}`}
+                              className="flex-1 truncate text-sm"
+                              onClick={() => {
+                                if (isMobile) {
+                                  setOpenMobile(false);
+                                }
+                              }}
+                            >
+                              {chat.title || 'New Chat'}
+                            </Link>
+                          )}
+                          
+                          <div className="relative">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={(e) => toggleMenu(chat.id, e)}
+                            >
+                              <MoreHorizontalIcon size={14} />
+                              <span className="sr-only">More options</span>
+                            </Button>
+                            
+                            {openMenuId === chat.id && (
+                              <div 
+                                ref={menuRef}
+                                className="absolute right-0 mt-1 w-36 rounded-md bg-background shadow-lg border border-border z-50"
+                              >
+                                <div className="py-1">
+                                  <button
+                                    className="flex w-full items-center px-3 py-2 text-sm hover:bg-muted"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      startRenaming(chat);
+                                    }}
+                                  >
+                                    <span className="mr-2">
+                                      <PencilEditIcon size={14} />
+                                    </span>
+                                    Rename
+                                  </button>
+                                  <button
+                                    className="flex w-full items-center px-3 py-2 text-sm text-red-500 hover:bg-muted"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      deleteChat(chat.id);
+                                    }}
+                                  >
+                                    <span className="mr-2">
+                                      <TrashIcon size={14} />
+                                    </span>
+                                    Delete
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+
