@@ -1,5 +1,5 @@
 import type { User as UserType } from '~/types';
-import { Form } from '@remix-run/react';
+import { Form, useSubmit } from '@remix-run/react';
 
 import { Avatar, AvatarFallback, AvatarImage } from '~/components/ui/avatar';
 import { Button } from '~/components/ui/button';
@@ -26,9 +26,20 @@ import {
   TooltipTrigger
 } from "~/components/ui/tooltip";
 import { Switch } from '~/components/ui/switch';
+import { useChat } from '~/context/chat-context';
+import { AVAILABLE_LLMS } from '~/lib/ai/models.config';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '~/components/ui/select';
+import { ModeToggle } from '~/components/mode-toggle';
 
 export function SidebarUserNav({ user }: { user: UserType }) {
   const { theme, setTheme } = useTheme();
+  const { selectedModel, setSelectedModel } = useChat();
   const [profileOpen, setProfileOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('general');
@@ -36,6 +47,27 @@ export function SidebarUserNav({ user }: { user: UserType }) {
   const [notifications, setNotifications] = useState(true);
   const [language, setLanguage] = useState("english");
   const [autoSave, setAutoSave] = useState(true);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [logoutAllConfirmOpen, setLogoutAllConfirmOpen] = useState(false);
+  const submit = useSubmit();
+  
+  // Shared logout handler
+  const handleLogout = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsLoggingOut(true);
+    setProfileOpen(false);
+    setSettingsOpen(false);
+    setLogoutConfirmOpen(false);
+    setLogoutAllConfirmOpen(false);
+    
+    submit(event.currentTarget, { replace: true });
+    
+    // Force a page reload after submission to ensure client state is reset
+    setTimeout(() => {
+      window.location.href = "/";
+    }, 500);
+  };
 
   return (
     <div className="flex items-center justify-between px-2">
@@ -67,6 +99,19 @@ export function SidebarUserNav({ user }: { user: UserType }) {
             </div>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
+          
+          {/* Theme Toggle as a DropdownMenuItem */}
+          <DropdownMenuItem asChild>
+            <Button 
+              variant="ghost" 
+              className="w-full justify-start cursor-pointer"
+              onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+            >
+              {theme === 'light' ? 'Dark Mode' : 'Light Mode'}
+            </Button>
+          </DropdownMenuItem>
+          
+          <DropdownMenuSeparator />
           <DropdownMenuItem
             onSelect={e => { e.preventDefault(); setProfileOpen(true); }}
           >
@@ -79,15 +124,79 @@ export function SidebarUserNav({ user }: { user: UserType }) {
           </DropdownMenuItem>
           
           <DropdownMenuSeparator />
-          <Form action="/logout" method="post" onSubmit={() => setProfileOpen(false)}>
-            <DropdownMenuItem asChild>
-              <button type="submit" className="w-full cursor-pointer">
-                Sign out
-              </button>
-            </DropdownMenuItem>
-          </Form>
+          <DropdownMenuItem
+            onSelect={e => { 
+              e.preventDefault(); 
+              setLogoutConfirmOpen(true); 
+            }}
+          >
+            Logout
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      
+      {/* Logout Confirmation Dialog */}
+      <Dialog open={logoutConfirmOpen} onOpenChange={setLogoutConfirmOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Confirm Logout</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to logout? You'll need to sign in again to access your account.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex justify-between items-center gap-4 sm:justify-between">
+            <Button variant="outline" onClick={() => setLogoutConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Form 
+              method="post" 
+              action="/logout"
+              onSubmit={handleLogout}
+            >
+              <input type="hidden" name="intent" value="logout" />
+              <Button
+                type="submit"
+                variant="destructive"
+                disabled={isLoggingOut}
+              >
+                {isLoggingOut ? "Logging out..." : "Confirm Logout"}
+              </Button>
+            </Form>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      
+      {/* Logout All Devices Confirmation Dialog */}
+      <Dialog open={logoutAllConfirmOpen} onOpenChange={setLogoutAllConfirmOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Confirm Logout from All Devices</DialogTitle>
+            <DialogDescription>
+              This will sign you out from all devices where you're currently logged in. Are you sure you want to continue?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex justify-between items-center gap-4 sm:justify-between">
+            <Button variant="outline" onClick={() => setLogoutAllConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Form 
+              method="post" 
+              action="/logout"
+              onSubmit={handleLogout}
+            >
+              <input type="hidden" name="intent" value="logout-all" />
+              <Button
+                type="submit"
+                variant="destructive"
+                disabled={isLoggingOut}
+              >
+                {isLoggingOut ? "Logging out..." : "Confirm Logout"}
+              </Button>
+            </Form>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      
       {/* Profile Dialog */}
       <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
         <DialogContent className="max-w-sm p-0">
@@ -144,12 +253,6 @@ export function SidebarUserNav({ user }: { user: UserType }) {
                     <span className="text-sm text-muted-foreground">Not provided</span>
                   </div>
                 </div>
-                
-                {user.role && (
-                  <Badge variant="outline" className="mt-2">
-                    {user.role}
-                  </Badge>
-                )}
               </CardContent>
             </Card>
           </div>
@@ -323,9 +426,15 @@ export function SidebarUserNav({ user }: { user: UserType }) {
               </h3>
               <div className="rounded-lg border bg-card">
                 <div className="p-5 border-b">
-                  <Button variant="outline" className="w-full flex items-center gap-2 justify-center" size="default">
+                  <Button 
+                    variant="outline" 
+                    className="w-full flex items-center gap-2 justify-center" 
+                    size="default"
+                    onClick={() => setLogoutAllConfirmOpen(true)}
+                    disabled={isLoggingOut}
+                  >
                     <LogOut size={16} />
-                    <span>Log out of all devices</span>
+                    <span>{isLoggingOut ? "Logging out..." : "Log out of all devices"}</span>
                   </Button>
                 </div>
                 

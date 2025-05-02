@@ -177,33 +177,26 @@ function ChatLayoutContent({
           </div>
           <div className="flex items-center gap-4 w-full justify-end">
             {!userLoggedIn ? (
-              // When not logged in, only show login and signup buttons
               <>
                 <Login />
                 <SignUp />
               </>
             ) : (
-              // When logged in, show model selector, theme toggle, and logout
-              <>
-                <LogoutDialog />
-                {/* Model selector only visible when logged in */}
-                <Select value={selectedModel} onValueChange={setSelectedModel}>
-                  <SelectTrigger className="w-[180px]">
-                    <SelectValue placeholder="Select Model">
-                      {AVAILABLE_LLMS.find(llm => llm.id === selectedModel)?.name || "Select Model"}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {AVAILABLE_LLMS.map((llm) => (
-                      <SelectItem key={llm.id} value={llm.id}>
-                        {llm.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <div className="w-6" />
-                <ModeToggle />
-              </>
+              // When logged in, only show model selector
+              <Select value={selectedModel} onValueChange={setSelectedModel}>
+                <SelectTrigger className="w-[180px]">
+                  <SelectValue placeholder="Select Model">
+                    {AVAILABLE_LLMS.find(llm => llm.id === selectedModel)?.name || "Select Model"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {AVAILABLE_LLMS.map((llm) => (
+                    <SelectItem key={llm.id} value={llm.id}>
+                      {llm.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
           </div>
         </div>
