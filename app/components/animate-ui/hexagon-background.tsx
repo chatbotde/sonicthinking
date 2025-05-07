@@ -53,7 +53,7 @@ const HexagonBackground = React.forwardRef<
       <div
         ref={ref}
         className={cn(
-          'relative size-full overflow-hidden dark:bg-neutral-900 bg-neutral-100',
+          'fixed inset-0 overflow-hidden dark:bg-neutral-900 bg-neutral-100',
           className,
         )}
         {...props}

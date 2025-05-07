@@ -149,9 +149,9 @@ function ChatLayoutContent({
   }, [location.pathname]);
 
   return (
-    <div className="flex min-h-screen w-full bg-white dark:bg-[oklch(0.147_0.004_49.25)]">
+    <div className="fixed inset-0 flex bg-white dark:bg-[oklch(0.147_0.004_49.25)]">
       <AppSidebar />
-      <div className={`flex flex-col flex-1 h-screen overflow-hidden bg-white dark:bg-[oklch(0.216_0.006_56.043)] transition-all duration-300 ${
+      <div className={`flex flex-col flex-1 h-full overflow-hidden bg-white dark:bg-[oklch(0.216_0.006_56.043)] transition-all duration-300 ${
         isMobile && openMobile ? 'opacity-30' : 'opacity-100'
       }`}>
         <div className="flex justify-between items-center p-3 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-[oklch(0.216_0.006_56.043)] z-10">
