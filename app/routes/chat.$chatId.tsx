@@ -139,7 +139,6 @@ function ChatPageContent() {
       input={input}
       onInputChange={handleInputChange}
       onSubmit={handleSend}
-      isIndexPage={false}
       customPlaceholder={isProcessing ? "Processing message..." : "Type a message..."}
     >
       <MessageWithActions />
