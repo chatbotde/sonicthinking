@@ -19,14 +19,13 @@ function ChatPageContent() {
   const { chatId } = useLoaderData<typeof loader>();
   const location = useLocation();
   // Get model state and sendMessage from context
-  const { inputDraft, setInputDraft, sendMessage, selectedModel, setSelectedModel, isLoading } = useChat();
+  const { inputDraft, setInputDraft, sendMessage, selectedModel, setSelectedModel, isLoading, messages } = useChat();
   const [input, setInput] = useState("");
-  // const [selectedModel, setSelectedModel] = useState("gemini"); // Remove local model state, use context
-  const [isProcessing, setIsProcessing] = useState(false); // Keep local processing state for UI feedback
+  const [isProcessing, setIsProcessing] = useState(false);
   const messageProcessed = useRef(false);
-  const [autoSendMessage, setAutoSendMessage] = useState<string | null>(null);
   const sendAttempts = useRef(0);
   const chatFullyLoaded = useRef(false);
+  const initialRender = useRef(true);
 
   // Sync local input with context draft if needed
   useEffect(() => {
@@ -41,151 +40,115 @@ function ChatPageContent() {
 
   // Wait for chat context to be fully initialized
   useEffect(() => {
-    // Mark chat as fully loaded after a short delay
     const timer = setTimeout(() => {
       chatFullyLoaded.current = true;
-      console.log("Chat context fully loaded, ready to process messages");
-    }, 800); // Give enough time for chat context to initialize
+    }, 200);
 
     return () => clearTimeout(timer);
   }, [chatId]);
 
-  // Process pending message with better timing and retry logic
+  // CRITICAL: Process pending message to ensure it gets sent to API only once
   useEffect(() => {
-    if (messageProcessed.current) return;
+    // If already processed or not the first render, skip
+    if (messageProcessed.current || !initialRender.current) return;
+    
+    // Mark first render as complete
+    initialRender.current = false;
+    
+    // Skip if there are already messages in this chat
+    if (messages && messages.length > 0) {
+      messageProcessed.current = true;
+      return;
+    }
 
     const processMessage = async () => {
-      // Try all possible sources for the pending message
-      let pendingMessage: string | null = null;
-
-      // Check all possible sources in order of preference
-      if (location.state?.pendingMessage) {
-        pendingMessage = location.state.pendingMessage;
-        console.log("Found pending message in location state:", pendingMessage);
-      } 
-      else if (sessionStorage.getItem('pendingMessage')) {
-        pendingMessage = sessionStorage.getItem('pendingMessage');
-        console.log("Found pending message in sessionStorage:", pendingMessage);
-      } 
-      else if (localStorage.getItem('pendingChatMessage')) {
-        pendingMessage = localStorage.getItem('pendingChatMessage');
-        console.log("Found pending message in localStorage:", pendingMessage);
-      }
+      // Check for a pending message from all possible sources
+      let pendingMessage = location.state?.pendingMessage 
+        || localStorage.getItem(`chat_${chatId}_pendingMessage`) 
+        || sessionStorage.getItem('pendingMessage');
 
       // If no message found, don't proceed
-      if (!pendingMessage) {
-        console.log("No pending message found");
-        return;
-      }
+      if (!pendingMessage) return;
 
+      console.log("Found pending message to process:", pendingMessage);
+      
       // Mark as being processed to prevent duplicate attempts
       messageProcessed.current = true;
-      setAutoSendMessage(pendingMessage);
-      setInput(pendingMessage); // Keep input populated for visibility
-      setInputDraft(pendingMessage); // Update draft as well
-      setIsProcessing(true); // Use local processing state
+      setIsProcessing(true);
 
-      // First, clear storage immediately to prevent duplicate processing
+      // Clear all storage locations immediately to prevent duplicates
       sessionStorage.removeItem('pendingMessage');
+      localStorage.removeItem(`chat_${chatId}_pendingMessage`);
+      // Clear any additional storage that might exist
       localStorage.removeItem('pendingChatMessage');
       localStorage.removeItem('pendingMessageTime');
 
-      // Function to attempt sending the message
-      const attemptSend = async () => {
+      // Function to send the message only once
+      const sendPendingMessage = async () => {
         if (!chatFullyLoaded.current) {
-          console.log("Chat not fully loaded yet, waiting...");
-          // Wait a bit longer before trying
-          setTimeout(attemptSend, 500);
+          setTimeout(sendPendingMessage, 100);
           return;
         }
 
         try {
-          console.log("Sending pending message via context:", pendingMessage);
-          // Use context's sendMessage (which includes the selectedModel)
-          await sendMessage(pendingMessage!);
-
-          console.log("Pending message successfully sent via context");
-          setInput(""); // Clear local input
-          setInputDraft(""); // Clear context draft
-          setAutoSendMessage(null);
-          setIsProcessing(false); // Clear local processing state
+          console.log("Sending message to API:", pendingMessage);
+          await sendMessage(pendingMessage!, true);
+          console.log("Message sent successfully");
+          setIsProcessing(false);
         } catch (error) {
-          console.error("Context sendMessage failed for pending message:", error);
-
-          // Retry logic
-          if (sendAttempts.current < 3) {
+          console.error("Failed to send message:", error);
+          if (sendAttempts.current < 1) { // Only retry once
             sendAttempts.current++;
-            console.log(`Retrying send (attempt ${sendAttempts.current})...`);
-
-            // Try again after a delay
-            setTimeout(attemptSend, 1000);
+            console.log(`Retrying send attempt ${sendAttempts.current}`);
+            setTimeout(sendPendingMessage, 500);
           } else {
-             // Keep message in input/draft for manual retry
-             setAutoSendMessage(null);
-             setIsProcessing(false);
-             alert("Failed to send your message automatically. Please try sending it again.");
+            setIsProcessing(false);
+            alert("Failed to send your message. Please try again.");
           }
         }
       };
 
-      // Start the send process with a delay to ensure everything is ready
-      setTimeout(attemptSend, 1000);
+      // Only start sending once
+      sendPendingMessage();
     };
 
-    // Start processing the message after a delay to ensure component is fully mounted
-    const timer = setTimeout(processMessage, 500);
-    return () => clearTimeout(timer);
-  }, [chatId, location.state, sendMessage, setInputDraft]); // Add dependencies
+    // Only process the message once
+    processMessage();
+  }, [chatId, location.state, sendMessage, messages]);
 
-
-  // Use context's sendMessage in the handler
+  // Simple send message handler for subsequent messages
   const handleSend = async (message: string) => {
     const trimmedMessage = message.trim();
-    // Use context's isLoading state + local isProcessing state
     if (!trimmedMessage || isLoading || isProcessing) return;
 
-    // Store the message and clear input immediately
-    setInput(""); // Clear input right away
-    setInputDraft(""); // Clear context draft immediately
-    setIsProcessing(true); // Set local processing state
-
+    // Clear input immediately
+    setInput("");
+    setInputDraft("");
+    
     try {
-      // Call context's sendMessage
       await sendMessage(trimmedMessage);
     } catch (error) {
-      console.error("Failed to send message via context:", error);
-      // Optionally restore the message on failure
-      // setInput(trimmedMessage);
-      // setInputDraft(trimmedMessage);
-    } finally {
-       setIsProcessing(false); // Clear local processing state regardless of context isLoading
+      console.error("Failed to send message:", error);
     }
   };
 
   return (
     <ChatLayout
-      // Pass context model state and setter to ChatLayout
       selectedModel={selectedModel}
       setSelectedModel={setSelectedModel}
-      // Use local input state for the input field display
-      input={isProcessing && autoSendMessage ? autoSendMessage : input}
-      onInputChange={handleInputChange} // Use updated handler
-      onSubmit={handleSend} // Use updated handler
+      input={input}
+      onInputChange={handleInputChange}
+      onSubmit={handleSend}
       isIndexPage={false}
+      customPlaceholder={isProcessing ? "Processing message..." : "Type a message..."}
     >
       <MessageWithActions />
-      {/* Display loading indicator based on context's isLoading */}
-      {/* {isLoading && <div>Loading response...</div>} */}
     </ChatLayout>
   );
 }
 
 export default function ChatPage() {
-  // No need to manage selectedModel state here anymore
-  // const [selectedModel, setSelectedModel] = useState("gemini");
-
   return (
-    // ChatProvider now defaults the model if not provided
     <ChatProvider>
       <ChatPageContent />
     </ChatProvider>

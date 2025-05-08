@@ -11,8 +11,8 @@ import type { LinksFunction, LoaderFunctionArgs } from "@remix-run/node";
 import clsx from "clsx";
 import { PreventFlashOnWrongTheme, ThemeProvider, useTheme } from "remix-themes";
 import { useEffect, useState } from 'react';
-import { useSupabase } from '~/hooks/use-supabase';
-import { ensureTablesExist } from '~/lib/db/init-db';
+import { useSupabase } from './hooks/use-supabase';
+import { ensureTablesExist } from './lib/db/init-db';
 
 import "./tailwind.css";
 import { themeSessionResolver } from "./sessions.server";

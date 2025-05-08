@@ -29,7 +29,6 @@ interface ChatLayoutProps {
   onSubmit: (message: string) => Promise<void>;
   selectedModel: string; // This will now be the LlmConfig.id
   setSelectedModel: (modelId: string) => void; // Setter takes LlmConfig.id
-  isIndexPage?: boolean;
   customPlaceholder?: string;
 }
 
@@ -41,7 +40,6 @@ function ChatLayoutContent({
   onSubmit,
   selectedModel, // Receives LlmConfig.id
   setSelectedModel, // Receives setter for LlmConfig.id
-  isIndexPage = false,
   customPlaceholder,
 }: ChatLayoutProps) {
   const [userLoggedIn, setUserLoggedIn] = useState(false);
@@ -53,70 +51,25 @@ function ChatLayoutContent({
   const navigate = useNavigate();
   const { createNewChat, selectedModel: contextModel, setSelectedModel: setContextModel } = useChat(); // Get model state from context
   const location = useLocation();
-  const [isCreatingChat, setIsCreatingChat] = useState(false);
-  const messageToSendRef = useRef<string | null>(null);
+  const isSubmitting = useRef(false); // Removed isCreatingChat and messageToSendRef
 
-  // Improved submission handler that immediately clears input
+  // Single submission handler to prevent duplicates
   const handleSubmit = async (message: string) => {
-    if (!message.trim() || isCreatingChat) return;
+    // Prevent empty messages and duplicate submissions
+    if (!message.trim() || isSubmitting.current) return;
     
-    if (isIndexPage) {
-      // Store the original message
-      const originalMessage = message;
-      messageToSendRef.current = originalMessage;
-      
-      // Immediately clear input to prevent duplicate submissions
-      onInputChange("");
-      setIsCreatingChat(true);
-      
-      try {
-        console.log("Creating new chat for message:", originalMessage);
-        const newChatId = await createNewChat();
-        console.log("Created chat ID:", newChatId);
-        
-        if (!newChatId) {
-          throw new Error("Failed to create chat - no chat ID returned");
-        }
-        
-        const timestamp = Date.now().toString();
-        
-        // Store in multiple locations for reliability
-        sessionStorage.setItem('pendingMessage', originalMessage);
-        localStorage.setItem('pendingChatMessage', originalMessage);
-        localStorage.setItem('pendingMessageTime', timestamp);
-        localStorage.setItem(`chat_${newChatId}_pendingMessage`, originalMessage);
-        
-        console.log("Stored message for transition:", originalMessage);
-        
-        // Navigate with a short delay to ensure storage is committed
-        setTimeout(() => {
-          navigate(`/chat/${newChatId}`, {
-            state: { pendingMessage: originalMessage, timestamp },
-            replace: true
-          });
-        }, 200);
-      } catch (error) {
-        console.error("Failed to create chat:", error);
-        setIsCreatingChat(false);
-        messageToSendRef.current = null;
-        
-        // Restore the original message if chat creation fails
-        onInputChange(originalMessage);
-        alert("There was an error creating your chat. Please try again.");
-      }
-    } else {
-      // On chat page - store message and clear input immediately
-      const messageToSend = message;
-      onInputChange(""); // Clear input right away
-      
-      // Send the message
-      try {
-        await onSubmit(messageToSend);
-      } catch (error) {
-        console.error("Failed to send message:", error);
-        // Optionally restore the message on failure
-        // onInputChange(messageToSend);
-      }
+    // On chat page - process message directly
+    const messageToSend = message.trim();
+    onInputChange(""); // Clear input right away
+    
+    try {
+      isSubmitting.current = true; // Prevent further submissions while processing
+      await onSubmit(messageToSend);
+    } catch (error) {
+      console.error("Failed to send message:", error);
+      // Optionally, restore input: onInputChange(messageToSend);
+    } finally {
+      isSubmitting.current = false; // Re-enable submission
     }
   };
 
@@ -146,6 +99,9 @@ function ChatLayoutContent({
     if (bottomRef.current) {
       bottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
+    
+    // Reset submission state when route changes
+    isSubmitting.current = false;
   }, [location.pathname]);
 
   return (
@@ -216,28 +172,12 @@ function ChatLayoutContent({
         <div className="sticky bottom-0 left-0 right-0 flex justify-center px-5 py-6 z-10 w-full bg-white dark:bg-[oklch(0.216_0.006_56.043)] shadow-sm">
           <div className="w-full max-w-4xl">
             <PromptInputWithActions
-              value={isCreatingChat && messageToSendRef.current ? messageToSendRef.current : input}
-              onChange={(e) => !isCreatingChat && onInputChange(e.target.value)}
+              value={input} // Simplified: always use input prop
+              onChange={(e) => onInputChange(e.target.value)} // Simplified: always allow input change
               onSubmit={handleSubmit}
-              disabled={isCreatingChat}
-              placeholder={
-                isCreatingChat 
-                  ? "Creating new chat..." 
-                  : customPlaceholder || (isIndexPage ? "Type to start a new chat..." : "Type a message...")
-              }
+              disabled={isSubmitting.current} // Simplified: disable only if isSubmitting
+              placeholder={customPlaceholder || "Type a message..."} // Simplified placeholder
             />
-            {isCreatingChat && (
-              <div className="text-sm text-center mt-2 text-muted-foreground">
-                <div className="inline-flex items-center">
-                  <span className="mr-2">Creating chat and preparing your message</span>
-                  <span className="flex space-x-1">
-                    <span className="h-1.5 w-1.5 bg-primary rounded-full animate-bounce [animation-delay:0ms]"></span>
-                    <span className="h-1.5 w-1.5 bg-primary rounded-full animate-bounce [animation-delay:150ms]"></span>
-                    <span className="h-1.5 w-1.5 bg-primary rounded-full animate-bounce [animation-delay:300ms]"></span>
-                  </span>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>
