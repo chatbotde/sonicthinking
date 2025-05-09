@@ -22,7 +22,7 @@ type ChatContextType = {
   isLoading: boolean;
   selectedModel: string; // Holds the LlmConfig.id (e.g., 'gemini-1.5-flash')
   setSelectedModel: (modelId: string) => void; // Takes LlmConfig.id
-  sendMessage: (message: string, useStreaming?: boolean) => Promise<void>;
+  sendMessage: (message: string, useStreaming?: boolean, overrideChatId?: string, isContinuation?: boolean) => Promise<void>;
   createNewChat: () => Promise<string>;
   error: string | null;
   updateStreamingContent: (messageId: string, content: string) => void;
@@ -169,23 +169,27 @@ export function ChatProvider({ children, initialModel }: { children: React.React
   };
 
   // Send a message to the AI
-  const sendMessage = async (content: string, useStreaming = true) => {
+  const sendMessage = async (content: string, useStreaming = true, overrideChatId?: string, isContinuation = false) => {
     if (!content.trim()) return;
-    setIsLoading(true); // Set loading true at the start
+    setIsLoading(true); 
     setError(null);
 
-    // Cancel any previous request before starting a new one
     if (abortControllerRef.current) {
         abortControllerRef.current.abort();
     }
-    // Create a new AbortController for this request
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
-    // Check if this is the first message in this chat session
-    const isFirstMessage = messages.length === 0;
+    const currentChatId = overrideChatId || chatId; 
+    if (!currentChatId) {
+      console.error("sendMessage: No chatId available (context or override). Aborting.");
+      setError("Chat session not properly initialized.");
+      setIsLoading(false);
+      return;
+    }
+    
+    const assistantMessageId = uuidv4(); // Define assistantMessageId here
 
-    // Get user ID for database operations
     const { data: sessionData } = await supabase.auth.getSession();
     const userId = sessionData.session?.user.id;
     if (!userId) {
@@ -193,79 +197,80 @@ export function ChatProvider({ children, initialModel }: { children: React.React
       setIsLoading(false);
       return;
     }
+    
+    // Skip adding/saving user message if this is a continuation of the first message
+    if (!isContinuation) {
+      const userMessageId = uuidv4();
+      const userMessage: Message = {
+        id: userMessageId,
+        chat_id: currentChatId, 
+        role: "user",
+        content,
+        created_at: new Date().toISOString(),
+        user_id: userId,
+      };
+      setMessages((prev) => [...prev, userMessage]);
 
-    // Use valid UUIDs for messages
-    const userMessageId = uuidv4();
-    const assistantMessageId = uuidv4();
-    const userMessage: Message = {
-      id: userMessageId,
-      chat_id: chatId,
-      role: "user",
-      content,
-      created_at: new Date().toISOString(),
-      user_id: userId,
-    };
+      try {
+        console.log("Saving user message to database:", userMessage);
+        const { error: userMsgError } = await supabase
+          .from("messages")
+          .insert(userMessage); 
 
-    // Optimistically update UI with user message
-    setMessages((prev) => [...prev, userMessage]);
-
-    // Save user message to database
-    try {
-      console.log("Saving user message to database:", userMessage);
-      const { error: userMsgError } = await supabase
-        .from("messages")
-        .insert({
-          id: userMessageId,
-          chat_id: chatId,
-          user_id: userId,
-          role: "user",
-          content: content,
-          created_at: userMessage.created_at
-        });
-
-      if (userMsgError) {
-        console.error("Error saving user message:", userMsgError);
+        if (userMsgError) {
+          console.error("Error saving user message:", userMsgError);
+        }
+      } catch (err) {
+        console.error("Exception saving user message:", err);
       }
-    } catch (err) {
-      console.error("Exception saving user message:", err);
     }
+    
+    const messagesForThisChat = messages.filter(m => m.chat_id === currentChatId);
+    const shouldTriggerTitleSummarization = !isContinuation ? messagesForThisChat.length <= 1 : messagesForThisChat.length < 2;
 
-    // If this is a new chat, update the URL
-    if (!params.chatId) {
-      navigate(`/chat/${chatId}`, { replace: true });
+    if (!params.chatId && !overrideChatId && !isContinuation) {
+      navigate(`/chat/${currentChatId}`, { replace: true });
     }
 
     try {
       if (useStreaming) {
-        // Add a placeholder message for the streaming response
         const assistantMessage: Message = {
-          id: assistantMessageId,
-          chat_id: chatId,
+          id: assistantMessageId, 
+          chat_id: currentChatId, 
           role: "assistant",
           content: "",
           created_at: new Date().toISOString(),
-          user_id: userId,
+          user_id: userId, 
           isStreaming: true,
           streamingContent: ""
         };
-
-        // Add the placeholder message
         setMessages(prev => [...prev, assistantMessage]);
 
-        // Create form data for the streaming request
         const formData = new FormData();
-        formData.append("chatId", chatId);
-        formData.append("message", content);
-        formData.append("model", selectedModel); // Pass the selected LlmConfig.id
+        formData.append("chatId", currentChatId); 
+        formData.append("message", content); 
+        formData.append("model", selectedModel);
 
-        // Make the streaming request with the abort signal
+        console.log(
+          `sendMessage to /api/stream: chatId=${currentChatId}, model=${selectedModel}, isContinuation=${isContinuation}, content="${content}"`
+        );
         const response = await fetch("/api/stream", {
           method: "POST",
           body: formData,
           signal: controller.signal, // Pass the signal here
         });
+        console.log(`sendMessage response from /api/stream: status=${response.status}`);
 
-        if (!response.ok) throw new Error("Failed to send message");
+        if (!response.ok) {
+            console.error(`sendMessage error: API response not OK - ${response.status} ${response.statusText}`);
+            try {
+                const errorText = await response.text();
+                console.error("API error response text:", errorText);
+            } catch (e) {
+                console.error("Could not get error text from API response.");
+            }
+            throw new Error(`Failed to send message. Status: ${response.status}`);
+        }
         if (!response.body) throw new Error("No response body");
 
         // Process the streaming response
@@ -325,7 +330,7 @@ export function ChatProvider({ children, initialModel }: { children: React.React
             .from("messages")
             .insert({
               id: assistantMessageId,
-              chat_id: chatId,
+              chat_id: currentChatId, // Use currentChatId
               user_id: userId,
               role: "assistant",
               content: finalContent,
@@ -346,37 +351,29 @@ export function ChatProvider({ children, initialModel }: { children: React.React
         }
 
         // Always trigger title summarization after the first exchange
-        if (isFirstMessage || messages.length <= 2) {
-          console.log("Triggering title summarization for first message");
+        if (shouldTriggerTitleSummarization) {
+          console.log(`Triggering title summarization for chat ${currentChatId} (continuation: ${isContinuation})`);
           setTimeout(() => {
-            summarizeChatTitle(chatId);
-          }, 1000); // Slight delay to ensure messages are saved
+            summarizeChatTitle(currentChatId); 
+          }, 1000); 
         }
       } else {
         // Non-streaming API code... (Consider if this path is still needed)
         // If needed, update this to call /api/ai and pass the selectedModel ID
-        console.warn("Non-streaming path in sendMessage is likely deprecated or needs update.");
+        console.warn("Non-streaming path in sendMessage needs review for isContinuation and title summarization.");
         setIsLoading(false); // Ensure loading stops if this path is taken without action
       }
     } catch (err: any) {
-      // Handle AbortError specifically
       if (err.name === 'AbortError') {
         console.log("Fetch aborted by user.");
-        // UI state (loading, partial message) should already be handled within the loop/stopGeneration
       } else {
         console.error("Error sending message:", err);
         setError(err.message || "Failed to send message");
-        // Revert optimistic updates or show error message if needed
-        // Remove the placeholder assistant message on error?
-        setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
+        // Clear placeholder on error using the ID defined outside the try block
+        setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId && msg.role === 'assistant')); 
       }
-      setIsLoading(false); // Ensure loading is false on any error
-      abortControllerRef.current = null; // Clear controller ref on error too
-    }
-    // Trigger title summarization if it's the first exchange
-    if (isFirstMessage) {
-      // Use a slight delay to ensure the assistant message might be starting
-      setTimeout(() => summarizeChatTitle(chatId), 1000);
+      setIsLoading(false); 
+      abortControllerRef.current = null; 
     }
   };
 
@@ -440,8 +437,8 @@ export function ChatProvider({ children, initialModel }: { children: React.React
       // 2. Call the streaming API with signal
       const formData = new FormData();
       formData.append("chatId", chatId);
-      formData.append("message", userMessage.content); // Use the original user prompt
-      formData.append("model", selectedModel); // Use the currently selected LlmConfig.id
+      formData.append("message", userMessage.content); 
+      formData.append("model", selectedModel); 
 
       const response = await fetch("/api/stream", {
         method: "POST",
@@ -567,7 +564,7 @@ export function ChatProvider({ children, initialModel }: { children: React.React
       const formData = new FormData();
       formData.append('intent', 'create-chat');
   
-      const response = await fetch('/api/ai/chat', {
+      const response = await fetch('/api/ai/chat', { // This API endpoint seems different from /api/stream
         method: 'POST',
         body: formData,
       });
@@ -577,25 +574,24 @@ export function ChatProvider({ children, initialModel }: { children: React.React
         throw new Error(errorData.error || `API Error: ${response.status}`);
       }
   
-      const { chatId: newId } = await response.json();
+      const { chatId: newIdFromApi } = await response.json(); // Renamed to avoid conflict with context's chatId
   
-      if (!newId) {
+      if (!newIdFromApi) {
         throw new Error("API did not return a chat ID");
       }
   
-      console.log("New chat created via API, ID:", newId);
-      setChatId(newId); // Update state with the ID from the backend
-      setMessages([]); // Clear messages for the new chat
-      setInputDraft(""); // Clear any input draft
+      console.log("New chat created via API, ID:", newIdFromApi);
+      setChatId(newIdFromApi); // Update context state with the ID from the backend
+      setMessages([]); 
+      setInputDraft(""); 
       setIsLoading(false);
-      return newId; // Return the confirmed chat ID
+      return newIdFromApi; 
   
     } catch (err: any) {
       console.error("Error creating new chat:", err);
       setError(err.message || "Failed to create chat");
       setIsLoading(false);
-      // Optionally re-throw or return a specific error indicator if needed
-      throw err; // Re-throw the error so the caller knows it failed
+      throw err; 
     }
   };
   
@@ -606,15 +602,15 @@ export function ChatProvider({ children, initialModel }: { children: React.React
         messages,
         chatId,
         isLoading,
-        selectedModel, // Holds the LlmConfig.id
-        setSelectedModel, // Expose setter for LlmConfig.id
+        selectedModel,
+        setSelectedModel,
         sendMessage,
         createNewChat,
         error,
         updateStreamingContent,
         finalizeStreamingMessage,
-        regenerateMessage, // Expose the regenerate function
-        stopGeneration, // Expose the stop function
+        regenerateMessage,
+        stopGeneration,
         inputDraft,
         setInputDraft,
       }}

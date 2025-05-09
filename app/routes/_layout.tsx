@@ -27,8 +27,9 @@ interface ChatLayoutProps {
   input: string;
   onInputChange: (value: string) => void;
   onSubmit: (message: string) => Promise<void>;
-  selectedModel: string; // This will now be the LlmConfig.id
-  setSelectedModel: (modelId: string) => void; // Setter takes LlmConfig.id
+  selectedModel: string;
+  setSelectedModel: (modelId: string) => void;
+  isIndexPage?: boolean;
   customPlaceholder?: string;
 }
 
@@ -38,8 +39,9 @@ function ChatLayoutContent({
   input,
   onInputChange,
   onSubmit,
-  selectedModel, // Receives LlmConfig.id
-  setSelectedModel, // Receives setter for LlmConfig.id
+  selectedModel,
+  setSelectedModel,
+  isIndexPage = false,
   customPlaceholder,
 }: ChatLayoutProps) {
   const [userLoggedIn, setUserLoggedIn] = useState(false);
@@ -48,26 +50,26 @@ function ChatLayoutContent({
   const bottomRef = useRef<HTMLDivElement>(null);
   const { openMobile, setOpenMobile, open } = useSidebar();
   const isMobile = useIsMobile();
-  const navigate = useNavigate();
   const { 
-    createNewChat, 
     selectedModel: contextModel, 
     setSelectedModel: setContextModel,
-    messages // Get messages from context for scroll behavior
+    messages
   } = useChat(); 
   const location = useLocation();
   const isSubmitting = useRef(false);
 
-  // Single submission handler
-  const handleSubmit = async (message: string) => {
+  // Simplified handleSubmit: it now directly calls the onSubmit prop from the parent.
+  // The parent (_index.tsx or chat.$chatId.tsx) is responsible for the actual logic
+  // (creating chat, sending message, clearing input, etc.)
+  const handleInternalSubmit = async (message: string) => {
     if (!message.trim() || isSubmitting.current) return;
-    const messageToSend = message.trim();
-    onInputChange("");
+    
+    isSubmitting.current = true;
     try {
-      isSubmitting.current = true;
-      await onSubmit(messageToSend);
+      await onSubmit(message); // Call the parent's onSubmit
     } catch (error) {
-      console.error("Failed to send message:", error);
+      console.error("Error during submission:", error);
+      // Parent's onSubmit should handle error states and potentially restore input
     } finally {
       isSubmitting.current = false;
     }
@@ -89,13 +91,11 @@ function ChatLayoutContent({
   // Scroll to bottom on new messages or route change
   useEffect(() => {
     if (bottomRef.current) {
-      // Check if there are messages to avoid scrolling on initial empty load if not desired
-      // However, for "scroll to bottom after first input", this will trigger correctly.
       bottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages, location.pathname]); // Add messages as a dependency
+  }, [messages, location.pathname]);
 
-  // Reset submission state when route changes (already present, good to keep)
+  // Reset submission state when route changes
   useEffect(() => {
     isSubmitting.current = false;
   }, [location.pathname]);
@@ -133,14 +133,9 @@ function ChatLayoutContent({
         </div>
 
         {/* Chat Content Area */}
-        <div className="flex-1 overflow-y-auto" ref={containerRef}> {/* Added overflow-y-auto here */}
-          <div className="h-full w-full max-w-4xl mx-auto px-6 flex flex-col"> {/* Centering and column direction */}
-            {/* This div will grow and allow content to be centered when small, and messages to stack from top */}
-            <div className="flex-grow flex flex-col justify-end pt-12"> {/* Changed to justify-end to keep messages at bottom before scroll kicks in, pt-12 for spacing */}
-              {/* Children (MessageWithActions) will render here */}
-              {/* If MessageWithActions renders individual messages, they should naturally stack up */}
-              {/* If there are no messages, this setup with justify-center in parent might be better */}
-              {/* Let's try justify-center first for initial empty state, then rely on scroll for subsequent messages. */}
+        <div className="flex-1 overflow-y-auto" ref={containerRef}>
+          <div className="h-full w-full max-w-4xl mx-auto px-6 flex flex-col">
+            <div className="flex-grow flex flex-col justify-center pt-12">
               <div className="flex-grow flex flex-col justify-center"> {children} </div>
             </div>
             <div ref={bottomRef} />
@@ -160,9 +155,12 @@ function ChatLayoutContent({
             <PromptInputWithActions
               value={input}
               onChange={(e) => onInputChange(e.target.value)}
-              onSubmit={handleSubmit}
+              onSubmit={handleInternalSubmit}
               disabled={isSubmitting.current}
-              placeholder={customPlaceholder || "Type a message..."}
+              placeholder={
+                customPlaceholder || 
+                (isIndexPage ? "Type to start a new chat..." : "Type a message...")
+              }
             />
           </div>
         </div>

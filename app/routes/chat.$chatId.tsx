@@ -4,7 +4,6 @@ import { useState, useEffect, useRef } from "react";
 import { ChatLayout } from "./_layout";
 import { MessageWithActions } from "~/components/message";
 import { ChatProvider, useChat } from "~/context/chat-context";
-import { getDefaultLlm } from "~/lib/ai/models.config"; // Import default LLM getter
 
 export const meta: MetaFunction = () => [
   { title: "Sonicthinking" },
@@ -18,115 +17,37 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 function ChatPageContent() {
   const { chatId } = useLoaderData<typeof loader>();
   const location = useLocation();
-  // Get model state and sendMessage from context
   const { inputDraft, setInputDraft, sendMessage, selectedModel, setSelectedModel, isLoading, messages } = useChat();
   const [input, setInput] = useState("");
-  const [isProcessing, setIsProcessing] = useState(false);
-  const messageProcessed = useRef(false);
-  const sendAttempts = useRef(0);
-  const chatFullyLoaded = useRef(false);
-  const initialRender = useRef(true);
+  
+  const chatFullyLoaded = useRef(false); // Keep chatFullyLoaded as it might be used generally
 
-  // Sync local input with context draft if needed
   useEffect(() => {
     setInput(inputDraft);
   }, [inputDraft]);
 
-  // Update context draft when local input changes
   const handleInputChange = (value: string) => {
     setInput(value);
     setInputDraft(value);
   };
 
-  // Wait for chat context to be fully initialized
+  // Restore chatFullyLoaded timer effect
   useEffect(() => {
-    const timer = setTimeout(() => {
-      chatFullyLoaded.current = true;
+    console.log(`ChatPage [${chatId}]: Setting up chatFullyLoaded timer.`);
+    const timer = setTimeout(() => { 
+      console.log(`ChatPage [${chatId}]: chatFullyLoaded.current set to true.`);
+      chatFullyLoaded.current = true; 
     }, 200);
-
     return () => clearTimeout(timer);
   }, [chatId]);
 
-  // CRITICAL: Process pending message to ensure it gets sent to API only once
-  useEffect(() => {
-    // If already processed or not the first render, skip
-    if (messageProcessed.current || !initialRender.current) return;
-    
-    // Mark first render as complete
-    initialRender.current = false;
-    
-    // Skip if there are already messages in this chat
-    if (messages && messages.length > 0) {
-      messageProcessed.current = true;
-      return;
-    }
-
-    const processMessage = async () => {
-      // Check for a pending message from all possible sources
-      let pendingMessage = location.state?.pendingMessage 
-        || localStorage.getItem(`chat_${chatId}_pendingMessage`) 
-        || sessionStorage.getItem('pendingMessage');
-
-      // If no message found, don't proceed
-      if (!pendingMessage) return;
-
-      console.log("Found pending message to process:", pendingMessage);
-      
-      // Mark as being processed to prevent duplicate attempts
-      messageProcessed.current = true;
-      setIsProcessing(true);
-
-      // Clear all storage locations immediately to prevent duplicates
-      sessionStorage.removeItem('pendingMessage');
-      localStorage.removeItem(`chat_${chatId}_pendingMessage`);
-      // Clear any additional storage that might exist
-      localStorage.removeItem('pendingChatMessage');
-      localStorage.removeItem('pendingMessageTime');
-
-      // Function to send the message only once
-      const sendPendingMessage = async () => {
-        if (!chatFullyLoaded.current) {
-          setTimeout(sendPendingMessage, 100);
-          return;
-        }
-
-        try {
-          console.log("Sending message to API:", pendingMessage);
-          await sendMessage(pendingMessage!, true);
-          console.log("Message sent successfully");
-          setIsProcessing(false);
-        } catch (error) {
-          console.error("Failed to send message:", error);
-          if (sendAttempts.current < 1) { // Only retry once
-            sendAttempts.current++;
-            console.log(`Retrying send attempt ${sendAttempts.current}`);
-            setTimeout(sendPendingMessage, 500);
-          } else {
-            setIsProcessing(false);
-            alert("Failed to send your message. Please try again.");
-          }
-        }
-      };
-
-      // Only start sending once
-      sendPendingMessage();
-    };
-
-    // Only process the message once
-    processMessage();
-  }, [chatId, location.state, sendMessage, messages]);
-
-  // Simple send message handler for subsequent messages
   const handleSend = async (message: string) => {
     const trimmedMessage = message.trim();
-    if (!trimmedMessage || isLoading || isProcessing) return;
-
-    // Clear input immediately
+    if (!trimmedMessage || isLoading) return;
     setInput("");
     setInputDraft("");
-    
     try {
-      await sendMessage(trimmedMessage);
+      await sendMessage(trimmedMessage, true, chatId); 
     } catch (error) {
       console.error("Failed to send message:", error);
     }
@@ -139,7 +60,8 @@ function ChatPageContent() {
       input={input}
       onInputChange={handleInputChange}
       onSubmit={handleSend}
-      customPlaceholder={isProcessing ? "Processing message..." : "Type a message..."}
+      isIndexPage={false}
+      customPlaceholder={isLoading ? "AI is thinking..." : "Type a message..."}
     >
       <MessageWithActions />
     </ChatLayout>
