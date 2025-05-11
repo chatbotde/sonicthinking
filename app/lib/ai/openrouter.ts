@@ -55,6 +55,7 @@ export async function generateChatResponse(
       model: modelName, // Use the provided modelName
       messages: messages,
       temperature: 0.7,
+      max_tokens: 32000,
     });
     
     return { content: completion.choices[0].message.content || "" };

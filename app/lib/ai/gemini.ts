@@ -11,7 +11,7 @@ import { findLlmById } from "./models.config"; // Import config lookup
 // Default configuration for the Gemini model
 const DEFAULT_CONFIG = {
   temperature: 0.7,
-  maxOutputTokens: 4096,
+  maxOutputTokens: 32000,
   topK: 40,
   topP: 0.95,
   model: "gemini-2.0-flash" // Default model
