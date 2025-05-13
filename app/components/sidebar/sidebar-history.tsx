@@ -25,6 +25,11 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState('');
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [generatingTitles, setGeneratingTitles] = useState<string[]>([]);
+  
+  // Move pendingTitleRef to the component top level
+  const pendingTitleRef = useRef<Set<string>>(new Set());
+  
   const inputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
@@ -33,6 +38,94 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
   useEffect(() => {
     fetchHistory();
   }, [supabase, user]);
+
+  // New function to trigger title generation with retry limitation
+  const generateChatTitle = useCallback(async (chatId: string) => {
+    if (!user?.id || generatingTitles.includes(chatId)) return;
+    
+    try {
+      // Add to generating titles list to prevent duplicate requests
+      setGeneratingTitles(prev => [...prev, chatId]);
+      
+      console.log(`Generating title for chat ${chatId}`);
+      
+      // Call the API endpoint to generate and save the title
+      const response = await fetch(`/api/chats/${chatId}/summarize-title`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'same-origin' // Ensure cookies are sent for authentication
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error(`API error (${response.status}): ${errorData.error || response.statusText}`);
+        
+        if (response.status === 422) {
+          // Chat has no messages yet, mark it to avoid repeated attempts
+          console.log(`Chat ${chatId} has no messages, setting a temporary title`);
+          setHistory(prev => 
+            prev.map(chat => 
+              chat.id === chatId 
+                ? { ...chat, title: "New Chat" } 
+                : chat
+            )
+          );
+        }
+        
+        throw new Error(`API returned ${response.status}: ${response.statusText}`);
+      }
+      
+      const result = await response.json();
+      
+      if (result.success && result.title) {
+        console.log(`Title generated for chat ${chatId}: "${result.title}"`);
+        // Manually update the title in case real-time subscription doesn't capture it
+        setHistory(prev => 
+          prev.map(chat => 
+            chat.id === chatId 
+              ? { ...chat, title: result.title }
+              : chat
+          )
+        );
+      } else {
+        console.error(`Failed to generate title for chat ${chatId}:`, result.error);
+      }
+    } catch (error) {
+      console.error(`Error generating title for chat ${chatId}:`, error);
+    } finally {
+      setGeneratingTitles(prev => prev.filter(id => id !== chatId));
+    }
+  }, [user?.id, generatingTitles]);
+
+  // Check for chats that need titles - with pendingTitleRef moved to component level
+  useEffect(() => {
+    if (!user?.id) return;
+    
+    // Find chats with default or empty titles that we haven't tried yet
+    const chatsNeedingTitles = history.filter(chat => 
+      (
+        !chat.title || 
+        chat.title === 'New Chat' || 
+        chat.title.trim() === ''
+      ) && 
+      !pendingTitleRef.current.has(chat.id) && 
+      !generatingTitles.includes(chat.id)
+    );
+    
+    // Generate titles one by one with delay between requests
+    if (chatsNeedingTitles.length > 0 && generatingTitles.length === 0) {
+      const chatToProcess = chatsNeedingTitles[0];
+      console.log(`Found chat needing title generation: ${chatToProcess.id}`);
+      
+      // Mark this chat as attempted
+      pendingTitleRef.current.add(chatToProcess.id);
+      
+      // Add a short delay to prevent immediate generation which might lack context
+      setTimeout(() => generateChatTitle(chatToProcess.id), 2000);
+    }
+  }, [history, user?.id, generateChatTitle, generatingTitles]);
 
   // Real-time subscription for chat changes
   useEffect(() => {
@@ -63,18 +156,27 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
               return prev;
             }
             
-            // Add the new chat at the top of the list
-            return [{
+            const newChat = {
               id: payload.new.id,
               title: payload.new.title || 'New Chat',
               userId: payload.new.user_id,
               createdAt: payload.new.created_at,
               updatedAt: payload.new.updated_at,
               visibility: payload.new.visibility || 'private'
-            }, ...prev.sort((a, b) => {
+            };
+            
+            // Add the new chat at the top of the list
+            const updatedHistory = [newChat, ...prev].sort((a, b) => {
               // Sort by updated_at date, newest first
               return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-            })];
+            });
+            
+            // Trigger title generation for the new chat
+            if (!newChat.title || newChat.title === 'New Chat') {
+              setTimeout(() => generateChatTitle(newChat.id), 500);
+            }
+            
+            return updatedHistory;
           });
         } else if (payload.eventType === 'UPDATE') {
           console.log('Updating chat in history:', payload.new);
@@ -111,7 +213,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
       console.log(`Cleaning up subscription for channel: ${channelName}`);
       supabase.removeChannel(subscription);
     };
-  }, [supabase, user]);
+  }, [supabase, user, generateChatTitle]);
 
   // Force refresh history when component mounts or when user changes
   useEffect(() => {
@@ -357,14 +459,21 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                           ) : (
                             <Link
                               to={`/chat/${chat.id}`}
-                              className="flex-1 truncate text-sm"
+                              className="flex-1 truncate text-sm flex items-center"
                               onClick={() => {
                                 if (isMobile) {
                                   setOpenMobile(false);
                                 }
                               }}
                             >
-                              {chat.title || 'New Chat'}
+                              {generatingTitles.includes(chat.id) ? (
+                                <>
+                                  <span className="inline-block w-3 h-3 bg-muted-foreground animate-pulse rounded-full mr-2"></span>
+                                  <span className="text-muted-foreground">Generating title...</span>
+                                </>
+                              ) : (
+                                chat.title || 'New Chat'
+                              )}
                             </Link>
                           )}
                           
@@ -397,6 +506,23 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                                       <PencilEditIcon size={14} />
                                     </span>
                                     Rename
+                                  </button>
+                                  <button
+                                    className="flex w-full items-center px-3 py-2 text-sm hover:bg-muted"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      generateChatTitle(chat.id);
+                                      setOpenMenuId(null);
+                                    }}
+                                  >
+                                    <span className="mr-2">
+                                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="m12 14 4-4"/>
+                                        <path d="M3.34 19a10 10 0 1 1 17.32 0"/>
+                                      </svg>
+                                    </span>
+                                    Generate title
                                   </button>
                                   <button
                                     className="flex w-full items-center px-3 py-2 text-sm text-red-500 hover:bg-muted"

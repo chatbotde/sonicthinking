@@ -246,126 +246,151 @@ async function fetchFirstMessages(chatId: string, supabase: SupabaseClient, user
   return messages;
 }
 
+// Add a cache to prevent regenerating the same titles repeatedly
+const titleGenerationCache = new Map<string, string>();
+
 // Centralized function for generating the best chat title
-// Consider making OpenRouter the primary attempt
 export async function generateBestChatTitle(
   input: { messages: { role: string; content: string }[] } | { chatId: string; supabase: SupabaseClient; userId: string },
-  // Remove optional model parameter, decide internally which model to use
 ): Promise<string> {
   let messages: { role: string; content: string }[] | null = null;
   let fetchedMessages = false;
+  let chatId: string | null = null;
 
-  // --- 1. Get Messages ---
-  if ('messages' in input) {
-    messages = input.messages;
-  } else if ('chatId' in input && input.supabase && input.userId) {
+  // --- 1. Get Messages and check cache ---
+  if ('chatId' in input) {
+    chatId = input.chatId;
+    // Check cache first
+    if (chatId && titleGenerationCache.has(chatId)) {
+      console.log(`Using cached title for chat ${chatId}: "${titleGenerationCache.get(chatId)}"`);
+      return titleGenerationCache.get(chatId) || "New Chat";
+    }
+    
     messages = await fetchFirstMessages(input.chatId, input.supabase, input.userId);
     fetchedMessages = true;
-  }
-
-  if (!messages || messages.length < 2) {
-    console.warn("Insufficient messages for title generation.");
-    // Attempt fallback with first message if available
-    const firstUserMessage = messages?.find(m => m.role === 'user')?.content;
-    return firstUserMessage
-      ? cleanTitle(firstUserMessage.slice(0, 48).replace(/[^a-zA-Z0-9 ]/g, '').trim() + '...')
-      : "New Chat";
-  }
-
-  const userMsg = messages.find(m => m.role === 'user')?.content || '';
-  const assistantMsg = messages.find(m => m.role === 'assistant')?.content || '';
-
-  if (!userMsg) {
-     console.warn("User message content is empty, cannot generate title effectively.");
-     return "New Chat";
-  }
-
-  // --- 2. Title Generation Attempts ---
-  const getTitleWithRetry = async (attempts = 0): Promise<string> => {
-    try {
-      // Attempt 1: OpenRouter (Primary)
-      try {
-        console.log(`Title generation attempt ${attempts + 1}: Trying OpenRouter...`);
-        const openRouterPrompt = buildTitlePrompt(userMsg, assistantMsg);
-        // Use a specific, potentially cheap/fast OpenRouter model for titles
-        // Find the config for a suitable model, e.g., Haiku or a free tier model if available
-        const titleModelConfig = findLlmById('deepseek-chat') || findLlmById('openai-gpt-3.5-turbo'); // Example fallback
-        let title = "New Chat"; // Default
-        if (titleModelConfig && titleModelConfig.provider === 'openrouter') {
-             // Pass prompt and model name
-             title = await generateTitleWithOpenRouter(openRouterPrompt, titleModelConfig.modelName);
-        } else {
-            console.warn("Suitable OpenRouter model for title generation not found in config.");
-            // Fallback to Gemini or skip OpenRouter attempt
-             // Pass only prompt if no specific model config found
-             title = await generateTitleWithOpenRouter(openRouterPrompt); // Use default model within the function
+  } else if ('messages' in input) {
+    messages = input.messages;
+    console.log(`Received ${messages.length} messages for title generation`);
+    
+    // Create a cache key from first user message if we don't have a chatId
+    if (messages.length > 0) {
+      const firstUserMsg = messages.find(m => m.role === 'user')?.content || '';
+      if (firstUserMsg) {
+        const cacheKey = `msg_${firstUserMsg.substring(0, 50)}`;
+        if (titleGenerationCache.has(cacheKey)) {
+          console.log(`Using cached title for message: "${titleGenerationCache.get(cacheKey)}"`);
+          return titleGenerationCache.get(cacheKey) || "New Chat";
         }
-
-        title = cleanTitle(title);
-        if (isValidTitle(title)) return title;
-        console.log('OpenRouter title failed or invalid, trying Gemini fallback.');
-      } catch (err) {
-        console.warn('OpenRouter title generation failed:', err);
       }
-
-      // Attempt 2: Gemini Input/Output Summary (Fallback)
-      try {
-        console.log(`Title generation attempt ${attempts + 1}: Trying Gemini...`);
-        const genAI = getGeminiClient();
-        // Use a specific, potentially cheaper/faster model for titles
-        const geminiModel = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
-
-        let title = await generateInputOutputSummaryTitle(userMsg, assistantMsg, geminiModel);
-        title = cleanTitle(title);
-        if (isValidTitle(title)) return title;
-        console.log('Gemini title failed or invalid, using snippet fallback.');
-      } catch (err) {
-        console.warn('Gemini title generation failed:', err);
-      }
-
-
-      // Retry logic (if desired)
-      if (attempts < 1) {
-         console.log(`Retrying title generation (Attempt ${attempts + 1})`);
-         await new Promise(resolve => setTimeout(resolve, 500));
-         return getTitleWithRetry(attempts + 1);
-      }
-
-      // Final Fallback: Snippet
-      console.log('All title generation methods failed or produced invalid titles. Using snippet fallback.');
-      return cleanTitle(userMsg.slice(0, 48).replace(/[^a-zA-Z0-9 ]/g, '').trim() + '...');
-
-    } catch (error) {
-      console.error(`Critical error during title generation attempt ${attempts + 1}:`, error);
-      if (attempts < 1) { // Retry on critical errors too? Be cautious.
-        return getTitleWithRetry(attempts + 1);
-      }
-      // Final fallback after critical error
-      return cleanTitle(userMsg.slice(0, 48).replace(/[^a-zA-Z0-9 ]/g, '').trim() + '...');
     }
-  };
-
-  const isValidTitle = (title: string): boolean => {
-    const cleaned = title.toLowerCase().trim();
-    return !!cleaned &&
-           cleaned.length > 3 &&
-           cleaned.length <= 100 && // Ensure reasonable length
-           !GENERIC_TITLES.some(t => cleaned.includes(t)) &&
-           cleaned !== "new chat" &&
-           cleaned !== "..."; // Avoid empty snippet fallback
-  };
-
-  // Execute title generation
-  let finalTitle = await getTitleWithRetry();
-
-  // Ensure final fallback if everything else returns empty/invalid
-  if (!isValidTitle(finalTitle)) {
-      finalTitle = cleanTitle(userMsg.slice(0, 48).replace(/[^a-zA-Z0-9 ]/g, '').trim() + '...');
-      if (!finalTitle) finalTitle = "New Chat"; // Absolute last resort
   }
 
-  console.log(`Final generated title: "${finalTitle}"`);
-  return finalTitle;
+  if (!messages || messages.length === 0) {
+    console.warn("No messages available for title generation.");
+    return "New Chat";
+  }
+
+  // Find user and assistant messages
+  const userMessages = messages.filter(m => m.role === 'user');
+  const assistantMessages = messages.filter(m => m.role === 'assistant');
+  
+  if (userMessages.length === 0) {
+    console.warn("No user messages found, cannot generate title effectively.");
+    return "New Chat";
+  }
+
+  // Get the first user message and first assistant message (if available)
+  const userMsg = userMessages[0].content || '';
+  const assistantMsg = assistantMessages.length > 0 ? assistantMessages[0].content || '' : '';
+
+  // Log what we're using for title generation
+  console.log(`Generating title using: 
+    User message: ${userMsg.substring(0, 100)}...
+    Assistant message: ${assistantMsg ? assistantMsg.substring(0, 100) + '...' : 'None'}`);
+
+  // --- 2. Title Generation with Gemini ---
+  try {
+    console.log("Using Gemini for title generation");
+    const genAI = getGeminiClient();
+    const geminiModel = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+
+    let title = await generateInputOutputSummaryTitle(userMsg, assistantMsg, geminiModel);
+    title = cleanTitle(title);
+    
+    if (isValidTitle(title)) {
+      console.log(`Successfully generated title: "${title}"`);
+      
+      // Store in cache
+      if (chatId) {
+        titleGenerationCache.set(chatId, title);
+      } else {
+        // Cache by first user message if no chatId
+        const cacheKey = `msg_${userMsg.substring(0, 50)}`;
+        titleGenerationCache.set(cacheKey, title);
+      }
+      
+      return title;
+    }
+    
+    console.log('Direct title generation failed, trying fallback method...');
+    
+    // Try with a different prompt as fallback
+    const fallbackTitle = await generateFallbackTitle(userMsg, geminiModel);
+    
+    if (isValidTitle(fallbackTitle)) {
+      console.log(`Fallback title generation succeeded: "${fallbackTitle}"`);
+      
+      // Store in cache
+      if (chatId) {
+        titleGenerationCache.set(chatId, fallbackTitle);
+      }
+      
+      return fallbackTitle;
+    }
+    
+    // Ultimate fallback: use the beginning of the user message
+    console.log('All title generation methods failed, using snippet fallback');
+    const snippetTitle = generateSnippetTitle(userMsg);
+    
+    // Store in cache
+    if (chatId) {
+      titleGenerationCache.set(chatId, snippetTitle);
+    }
+    
+    return snippetTitle;
+  } catch (error) {
+    console.error("Error during title generation:", error);
+    return generateSnippetTitle(userMsg);
+  }
+}
+
+// Helper function for fallback title generation
+async function generateFallbackTitle(userInput: string, model: GenerativeModel): Promise<string> {
+  try {
+    const prompt = `Create a very short title (2-4 words) for this question: "${userInput.slice(0, 200)}"`;
+    const result = await model.generateContent(prompt);
+    return cleanTitle(result.response.text());
+  } catch (err) {
+    console.error("Fallback title generation failed:", err);
+    return "";
+  }
+}
+
+// Generate a title from the first part of the user message
+function generateSnippetTitle(userMsg: string): string {
+  const snippet = userMsg.slice(0, 48).replace(/[^a-zA-Z0-9 ]/g, '').trim() + '...';
+  return cleanTitle(snippet) || "New Chat";
+}
+
+// Validate if a title is acceptable
+function isValidTitle(title: string): boolean {
+  const cleaned = title.toLowerCase().trim();
+  return !!cleaned &&
+         cleaned.length > 3 &&
+         cleaned.length <= 100 && // Ensure reasonable length
+         !GENERIC_TITLES.some(t => cleaned.includes(t)) &&
+         cleaned !== "new chat" &&
+         cleaned !== "..."; // Avoid empty snippet fallback
 }
 
 function cleanTitle(title: string): string {
@@ -386,31 +411,46 @@ export async function generateInputOutputSummaryTitle(
   aiOutput: string,
   model?: GenerativeModel
 ): Promise<string> {
-  if (!userInput || !aiOutput) return "New Chat";
+  if (!userInput) return "New Chat";
   try {
     let geminiModel = model;
     if (!geminiModel) {
       const genAI = getGeminiClient();
-      geminiModel = genAI.getGenerativeModel({ model: 'gemini-pro' });
+      geminiModel = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
     }
-    const prompt = `Create a concise 4-6 word title capturing both the user's question and AI's response. Focus on the core topic and solution.\n\nQuestion: ${userInput}\nResponse: ${aiOutput}\n\nTitle Requirements:
-1. Combine key elements from both question and answer
-2. Use specific terms from the exchange
-3. Avoid generic words like "chat" or "discussion"
-4. Format as a noun phrase without complete sentences
-5. Maximum 6 words
+    
+    // Improved prompt to generate better titles
+    const prompt = `Generate a brief, descriptive title (3-5 words) that captures the core topic from this conversation:
 
-Title:`;
+User: ${userInput.slice(0, 250)}
+${aiOutput ? `AI: ${aiOutput.slice(0, 250)}` : ''}
+
+REQUIREMENTS:
+- Title should be 3-5 words maximum
+- Focus specifically on the main topic or question
+- Be descriptive and specific
+- Avoid generic words like "chat", "conversation" or "assistance"
+- Don't use quotes or punctuation in the title
+- Make it useful for finding this conversation later
+
+ONLY OUTPUT THE TITLE, NOTHING ELSE.`;
+
+    console.log("Using title prompt:", prompt.substring(0, 100) + "...");
+    
     const result = await geminiModel.generateContent(prompt);
     const response = await result.response;
     let title = response.text().trim();
+    
     // Clean up title
     title = title.replace(/^\s*["'`*\-]+|["'`*\-]+\s*$/g, "");
     title = title.replace(/\b(Chat|Summary|Conversation|Title)\b/gi, "").trim();
     title = title.replace(/\s{2,}/g, " ");
+    
+    console.log(`Raw generated title: "${title}"`);
     return title.length > 2 ? title.substring(0, 100) : "New Chat";
   } catch (err) {
-    return "New Chat";
+    console.error("Error in generateInputOutputSummaryTitle:", err);
+    return userInput.slice(0, 30) + "..."; // Use beginning of user input as fallback
   }
 }
 
