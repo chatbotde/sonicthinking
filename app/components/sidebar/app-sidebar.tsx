@@ -104,7 +104,15 @@ export function AppSidebar() {
     fetchUser();
   }, [supabase]);
 
-  // Improve the new chat handler with better logging and async handling
+  // Get history from sidebar-history component
+  const [history, setHistory] = useState<Array<any>>([]);
+  useEffect(() => {
+    if (window.chatHistory) {
+      setHistory(window.chatHistory);
+    }
+  }, []);
+
+  // Improve the new chat handler with better empty chat detection
   const handleNewChat = async () => {
     console.log('handleNewChat called. User:', user); // Log user state
     if (!user) {
@@ -114,7 +122,20 @@ export function AppSidebar() {
     }
 
     try {
-      console.log('Calling createNewChat for user:', user.id);
+      // Check if there's already an empty chat we can navigate to
+      const emptyChats = history?.filter(chat => 
+        chat.isEmpty === true || 
+        (chat.title === 'New Chat' && !chat.hasMessages)
+      );
+
+      if (emptyChats?.length > 0) {
+        console.log('Found existing empty chat, navigating instead of creating new one:', emptyChats[0].id);
+        setOpenMobile(false);
+        navigate(`/chat/${emptyChats[0].id}`);
+        return;
+      }
+
+      console.log('No empty chats found, creating new chat for user:', user.id);
       const newChatId = await createNewChat(); // Await the async function
       console.log('New chat created successfully, navigating to:', newChatId);
       setOpenMobile(false); // Close mobile sidebar on navigation
@@ -122,12 +143,19 @@ export function AppSidebar() {
     } catch (error) {
       console.error('Failed to create new chat:', error);
       // You might want to show an error toast or message to the user here
-      // e.g., toast.error("Failed to create chat. Please try again.");
     }
   };
 
   // Disable button if on a chat page (/chat/...) and there are no messages yet
-  const isNewChatButtonDisabled = !!params.chatId && messages.length === 0;
+  // OR if there's already an empty chat
+  const hasEmptyChat = history?.some(chat => 
+    chat.isEmpty === true || 
+    (chat.title === 'New Chat' && !chat.hasMessages)
+  );
+  
+  const isNewChatButtonDisabled = 
+    (!!params.chatId && messages.length === 0) || 
+    hasEmptyChat;
 
   // Determine if the New Chat button should be visible
   const showNewChatButton = open || openMobile;

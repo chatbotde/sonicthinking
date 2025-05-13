@@ -68,10 +68,13 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
           setHistory(prev => 
             prev.map(chat => 
               chat.id === chatId 
-                ? { ...chat, title: "New Chat" } 
+                ? { ...chat, title: "New Chat", isEmpty: true } 
                 : chat
             )
           );
+          
+          // Add this chat to pendingTitleRef to avoid future attempts
+          pendingTitleRef.current.add(chatId);
         }
         
         throw new Error(`API returned ${response.status}: ${response.statusText}`);
@@ -85,7 +88,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
         setHistory(prev => 
           prev.map(chat => 
             chat.id === chatId 
-              ? { ...chat, title: result.title }
+              ? { ...chat, title: result.title, isEmpty: false }
               : chat
           )
         );
@@ -99,9 +102,57 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
     }
   }, [user?.id, generatingTitles]);
 
+  // Find empty chats (with no messages)
+  const hasEmptyChat = history.some(chat => 
+    (chat.title === 'New Chat' && pendingTitleRef.current.has(chat.id)) || 
+    chat.isEmpty === true
+  );
+
+  // Export chat history and empty chat status for use in parent components
+  useEffect(() => {
+    // Make chat history available to other components
+    if (typeof window !== 'undefined') {
+      window.chatHistory = history;
+      window.hasEmptyChat = hasEmptyChat;
+    }
+  }, [history, hasEmptyChat]);
+
   // Check for chats that need titles - with pendingTitleRef moved to component level
   useEffect(() => {
     if (!user?.id) return;
+    
+    // Also check if chats have messages
+    const checkChatsWithMessages = async () => {
+      for (const chat of history) {
+        if (chat.hasMessages === undefined) {
+          try {
+            const { data, error } = await supabase
+              .from('messages')
+              .select('id')
+              .eq('chat_id', chat.id)
+              .limit(1);
+              
+            if (!error) {
+              const hasMessages = data && data.length > 0;
+              setHistory(prev => 
+                prev.map(c => c.id === chat.id ? { ...c, hasMessages } : c)
+              );
+              
+              // If no messages and title is "New Chat", mark as empty
+              if (!hasMessages && (chat.title === 'New Chat' || !chat.title)) {
+                setHistory(prev => 
+                  prev.map(c => c.id === chat.id ? { ...c, isEmpty: true } : c)
+                );
+              }
+            }
+          } catch (err) {
+            console.error(`Error checking messages for chat ${chat.id}:`, err);
+          }
+        }
+      }
+    };
+    
+    checkChatsWithMessages();
     
     // Find chats with default or empty titles that we haven't tried yet
     const chatsNeedingTitles = history.filter(chat => 
