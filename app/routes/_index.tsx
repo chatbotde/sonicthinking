@@ -114,10 +114,7 @@ function IndexPageContent() {
         <div className="flex flex-col items-center justify-center flex-1 py-12">
           <div className="text-center max-w-2xl px-4">
             <h1 className="text-3xl sm:text-4xl font-bold mb-4">Welcome to Sonicthinking</h1>
-            <p className="text-muted-foreground">
-              Ask anything, get answers, and explore ideas.
-            </p>
-          </div>
+         </div>
         </div>
       )}
     </ChatLayout>
