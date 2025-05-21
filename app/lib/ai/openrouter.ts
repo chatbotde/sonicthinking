@@ -85,6 +85,7 @@ export async function streamChatResponse(
       messages: messages,
       temperature: 0.7,
       stream: true,
+      max_tokens: 32000, // Set max_tokens for streaming
     }, { signal }); // Pass signal to the create method options
 
     const transformedStream = openRouterStreamTransformer(stream);
